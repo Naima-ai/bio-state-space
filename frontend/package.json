@@ -1,4 +1,1 @@
-cd frontend
-npm create vite@latest . -- --template vue
-npm install
-npm install plotly.js-dist-min
+
