@@ -83,6 +83,7 @@ def simulate_endpoint(req: SimRequest):
 
     spike_index = int(np.searchsorted(t, req.spike_time))
     spike_index = max(0, min(spike_index, len(t) - 1))
+    print("SCENARIO RECEIVED:", req.scenario)
 
     return SimResponse(
         t=t.tolist(),
