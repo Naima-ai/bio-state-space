@@ -36,7 +36,7 @@
 
       <div class="row">
         <button class="run" @click="run" :disabled="loading">
-          {{ loading ? 'Running…' : 'Run / Update' }}
+          {{ loading ? "Running…" : "Run / Update" }}
         </button>
       </div>
 
@@ -64,19 +64,27 @@ const seed = ref(7);
 const loading = ref(false);
 const metrics = ref("");
 
-/**
- * IMPORTANT:
- * In Codespaces, your backend will be a forwarded URL.
- * For local dev, use: http://localhost:8000
- * For Codespaces, paste your forwarded backend URL into VITE_API_BASE in .env
- */
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
+/**
+ * Make mode switching visibly update the plot:
+ * - sets scenario
+ * - triggers run() immediately
+ */
 function setScenario(val) {
   scenario.value = val;
+  run(); // auto-update on toggle
 }
 
+/**
+ * Plotting change:
+ * - Use marker "cloud" rendering for trajectories (much easier to see spread differences)
+ * - Keep spike marker + label
+ * - Keep spread metric so you can prove stress > no-stress
+ */
 async function run() {
+  if (!plotEl.value) return;
+
   loading.value = true;
   metrics.value = "";
 
@@ -90,6 +98,10 @@ async function run() {
       spike_amp: spikeAmp.value,
       spike_width: 3.0,
       max_points: 4000,
+
+      // OPTIONAL: force visible difference even if backend defaults change later
+      // stress_noise_std: 2.0,
+      // nostress_noise_std: 0.02,
     };
 
     const res = await fetch(`${API_BASE}/simulate`, {
@@ -98,62 +110,87 @@ async function run() {
       body: JSON.stringify(body),
     });
 
-    if (!res.ok) throw new Error(`API error ${res.status}`);
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(`API error ${res.status}: ${txt}`);
+    }
+
     const data = await res.json();
 
-    const x = data.x, y = data.y, z = data.z;
-    const idx = data.spike_index;
+    const x = data.x || [];
+    const y = data.y || [];
+    const z = data.z || [];
+    const idxRaw = Number.isFinite(data.spike_index) ? data.spike_index : 0;
+    const idx = Math.max(0, Math.min(idxRaw, x.length - 1));
 
-    // Split into phases: before spike and after spike (optional)
-    const x1 = x.slice(0, idx), y1 = y.slice(0, idx), z1 = z.slice(0, idx);
-    const x2 = x.slice(idx), y2 = y.slice(idx), z2 = z.slice(idx);
+    if (x.length < 10) {
+      throw new Error(`Too few points returned (${x.length}). Check backend.`);
+    }
 
-    // Basic metrics (proxy)
-    const meanX = x.reduce((a,b)=>a+b,0)/x.length;
-    const meanY = y.reduce((a,b)=>a+b,0)/y.length;
-    const meanZ = z.reduce((a,b)=>a+b,0)/z.length;
+    // Split into phases: before spike and after spike
+    const x1 = x.slice(0, idx),
+      y1 = y.slice(0, idx),
+      z1 = z.slice(0, idx);
+    const x2 = x.slice(idx),
+      y2 = y.slice(idx),
+      z2 = z.slice(idx);
+
+    // Basic metrics (spread proxy)
+    const meanX = x.reduce((a, b) => a + b, 0) / x.length;
+    const meanY = y.reduce((a, b) => a + b, 0) / y.length;
+    const meanZ = z.reduce((a, b) => a + b, 0) / z.length;
+
     let spread = 0;
-    for (let i=0;i<x.length;i++){
-      const dx = x[i]-meanX, dy=y[i]-meanY, dz=z[i]-meanZ;
-      spread += Math.sqrt(dx*dx+dy*dy+dz*dz);
+    for (let i = 0; i < x.length; i++) {
+      const dx = x[i] - meanX,
+        dy = y[i] - meanY,
+        dz = z[i] - meanZ;
+      spread += Math.sqrt(dx * dx + dy * dy + dz * dz);
     }
     spread /= x.length;
 
     const zPeak = Math.max(...z);
 
     metrics.value =
-      `Mode: ${scenario.value}\n` +
+      `API_BASE: ${API_BASE}\n` +
+      `Mode sent: ${scenario.value}\n` +
       `Points: ${x.length}\n` +
+      `Spike index: ${idx}\n` +
       `Spread proxy: ${spread.toFixed(3)}\n` +
       `Peak z: ${zPeak.toFixed(3)}\n`;
 
+    // MAIN CHANGE: markers cloud (shows thickness/spread clearly)
     const traces = [
       {
         type: "scatter3d",
-        mode: "lines",
+        mode: "markers",
         name: "Before spike",
-        x: x1, y: y1, z: z1,
-        line: { width: 4 },
-        opacity: 0.7,
+        x: x1,
+        y: y1,
+        z: z1,
+        marker: { size: 2, opacity: 0.25 },
       },
       {
         type: "scatter3d",
-        mode: "lines",
+        mode: "markers",
         name: "After spike",
-        x: x2, y: y2, z: z2,
-        line: { width: 5 },
-        opacity: 0.9,
+        x: x2,
+        y: y2,
+        z: z2,
+        marker: { size: 2, opacity: 0.35 },
       },
       {
         type: "scatter3d",
         mode: "markers+text",
         name: "Spike",
-        x: [x[idx]], y: [y[idx]], z: [z[idx]],
+        x: [x[idx]],
+        y: [y[idx]],
+        z: [z[idx]],
         text: ["Spike"],
         textposition: "top center",
-        marker: { size: 4 },
+        marker: { size: 5, opacity: 1.0 },
         showlegend: true,
-      }
+      },
     ];
 
     const layout = {
@@ -169,7 +206,6 @@ async function run() {
     };
 
     await Plotly.react(plotEl.value, traces, layout, { responsive: true });
-
   } catch (e) {
     metrics.value = `Error: ${e.message}`;
   } finally {
@@ -177,9 +213,8 @@ async function run() {
   }
 }
 
-onMounted(async () => {
-  // first render
-  await run();
+onMounted(() => {
+  run(); // initial render
 });
 </script>
 
@@ -224,6 +259,7 @@ button.run {
   padding: 10px;
   border: 1px solid #e2e2e2;
   font-size: 12px;
+  white-space: pre-wrap;
 }
 .plot {
   padding: 10px;
