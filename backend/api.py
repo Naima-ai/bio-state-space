@@ -36,8 +36,8 @@ class SimRequest(BaseModel):
     alpha_u: float = 3.0
     gamma_b: float = 2.0
 
-    stress_noise_std: float = 0.8
-    nostress_noise_std: float = 0.05
+    stress_noise_std: float = 2.0
+    nostress_noise_std: float = 0.02
 
     # frontend can request fewer points to keep browser fast
     max_points: int = 4000
