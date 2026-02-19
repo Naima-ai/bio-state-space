@@ -64,7 +64,7 @@ const seed = ref(7);
 const loading = ref(false);
 const metrics = ref("");
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+const API_BASE = "/api";
 
 /**
  * Make mode switching visibly update the plot:
