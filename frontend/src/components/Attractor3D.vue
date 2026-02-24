@@ -8,6 +8,12 @@
         <button :class="{active: scenario==='stress'}" @click="setScenario('stress')">Stress</button>
         <button :class="{active: scenario==='no-stress'}" @click="setScenario('no-stress')">No-stress</button>
       </div>
+      
+      <div class="row">
+        <label>GA</label>
+        <input type="checkbox" v-model="useGA" />
+        <span style="font-size:12px;">Use GA optimized RMNS</span>
+      </div>
 
       <div class="row">
         <label>t_max</label>
