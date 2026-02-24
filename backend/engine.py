@@ -114,7 +114,7 @@ def simulate(
         t_span=(t_eval[0], t_eval[-1]),
         y0=np.array(x0, dtype=float),
         t_eval=t_eval,
-        method="RK45",
+        method="RK23",
         rtol=1e-6,
         atol=1e-9,
     )
