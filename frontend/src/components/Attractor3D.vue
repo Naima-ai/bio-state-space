@@ -123,13 +123,13 @@ async function run() {
       const optBody = {
         scenario: scenario.value,
         t_max: tMax.value,
-        dt: dt.value,
+        dt: 0.02,
         seed: seed.value,
         spike_time: spikeTime.value,
         spike_amp: spikeAmp.value,
         spike_width: 3.0,
-        generations: 6,
-        pop_size: 8,
+        generations: 4,
+        pop_size: 6,
       };
 
       const opt = await postJson(`${API_BASE}/optimize`, optBody);
