@@ -5,13 +5,13 @@ from typing import List, Literal, Optional
 import numpy as np
 
 from engine import Params, simulate
+from ga_optimize import run_evolution
 
 app = FastAPI(title="Bio State Space API", version="1.0")
 
-# Allow Vue dev server + LoopQ host later
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten later for production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -29,7 +29,6 @@ class SimRequest(BaseModel):
     spike_amp: float = 8.0
     spike_width: float = 3.0
 
-    # optional override of model params
     sigma: float = 10.0
     rho: float = 28.0
     beta: float = 8.0 / 3.0
@@ -39,8 +38,12 @@ class SimRequest(BaseModel):
     stress_noise_std: float = 2.0
     nostress_noise_std: float = 0.02
 
-    # frontend can request fewer points to keep browser fast
     max_points: int = 4000
+
+    # NEW: GA mode
+    use_ga: bool = False
+    ga_generations: int = 12
+    ga_pop_size: int = 12
 
 
 class SimResponse(BaseModel):
@@ -49,6 +52,10 @@ class SimResponse(BaseModel):
     y: List[float]
     z: List[float]
     spike_index: int
+
+    # NEW: show what weights were used
+    rmns_weights: Optional[List[float]] = None
+    best_spread: Optional[float] = None
 
 
 @app.post("/simulate", response_model=SimResponse)
@@ -63,6 +70,27 @@ def simulate_endpoint(req: SimRequest):
         nostress_noise_std=req.nostress_noise_std,
     )
 
+    rmns_weights = None
+    best_spread = None
+
+    if req.use_ga:
+        sim_kwargs = dict(
+            params=params,
+            scenario=req.scenario,   # GA optimizes inside chosen mode
+            t_max=req.t_max,
+            dt=req.dt,
+            seed=req.seed,
+            spike_time=req.spike_time,
+            spike_amp=req.spike_amp,
+            spike_width=req.spike_width,
+        )
+        best_weights, best_spread = run_evolution(
+            sim_kwargs,
+            generations=req.ga_generations,
+            pop_size=req.ga_pop_size,
+        )
+        rmns_weights = np.array(best_weights, dtype=float)
+
     t, traj = simulate(
         params=params,
         scenario=req.scenario,
@@ -72,18 +100,18 @@ def simulate_endpoint(req: SimRequest):
         spike_time=req.spike_time,
         spike_amp=req.spike_amp,
         spike_width=req.spike_width,
+        rmns_weights=rmns_weights,   # <-- optimized weights if GA used
     )
 
-    # Downsample if too many points (important for browser + Codespaces)
-    n = len(t)
-    if n > req.max_points:
-        step = int(np.ceil(n / req.max_points))
+    if len(t) > req.max_points:
+        step = int(np.ceil(len(t) / req.max_points))
         t = t[::step]
         traj = traj[::step]
 
     spike_index = int(np.searchsorted(t, req.spike_time))
     spike_index = max(0, min(spike_index, len(t) - 1))
-    print("SCENARIO RECEIVED:", req.scenario)
+
+    print("SCENARIO RECEIVED:", req.scenario, "| use_ga:", req.use_ga, "| weights:", rmns_weights)
 
     return SimResponse(
         t=t.tolist(),
@@ -91,4 +119,6 @@ def simulate_endpoint(req: SimRequest):
         y=traj[:, 1].tolist(),
         z=traj[:, 2].tolist(),
         spike_index=spike_index,
+        rmns_weights=rmns_weights.tolist() if rmns_weights is not None else None,
+        best_spread=best_spread,
     )
