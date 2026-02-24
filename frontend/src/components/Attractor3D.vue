@@ -8,7 +8,7 @@
         <button :class="{active: scenario==='stress'}" @click="setScenario('stress')">Stress</button>
         <button :class="{active: scenario==='no-stress'}" @click="setScenario('no-stress')">No-stress</button>
       </div>
-      
+
       <div class="row">
         <label>GA</label>
         <input type="checkbox" v-model="useGA" />
@@ -63,32 +63,52 @@ const plotEl = ref(null);
 
 const scenario = ref("stress");
 const useGA = ref(false);
+
 const tMax = ref(80);
 const dt = ref(0.02);
 const spikeTime = ref(35);
 const spikeAmp = ref(8);
 const seed = ref(7);
+
 const loading = ref(false);
 const metrics = ref("");
 
 const API_BASE = "/api";
 
-/**
- * Make mode switching visibly update the plot:
- * - sets scenario
- * - triggers run() immediately
- */
 function setScenario(val) {
   scenario.value = val;
-  run(); // auto-update on toggle
+  run();
 }
 
-/**
- * Plotting change:
- * - Use marker "cloud" rendering for trajectories (much easier to see spread differences)
- * - Keep spike marker + label
- * - Keep spread metric so you can prove stress > no-stress
- */
+function spreadProxy(x, y, z) {
+  const n = x.length;
+  const meanX = x.reduce((a, b) => a + b, 0) / n;
+  const meanY = y.reduce((a, b) => a + b, 0) / n;
+  const meanZ = z.reduce((a, b) => a + b, 0) / n;
+
+  let s = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = x[i] - meanX;
+    const dy = y[i] - meanY;
+    const dz = z[i] - meanZ;
+    s += Math.sqrt(dx * dx + dy * dy + dz * dz);
+  }
+  return s / n;
+}
+
+async function postJson(url, body) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`API error ${res.status}: ${txt}`);
+  }
+  return await res.json();
+}
+
 async function run() {
   if (!plotEl.value) return;
 
@@ -96,7 +116,35 @@ async function run() {
   metrics.value = "";
 
   try {
-    const body = {
+    // 1) If GA is enabled, get optimized weights from /optimize
+    let rmnsWeights = null;
+
+    if (useGA.value) {
+      const optBody = {
+        scenario: scenario.value,
+        t_max: tMax.value,
+        dt: dt.value,
+        seed: seed.value,
+        spike_time: spikeTime.value,
+        spike_amp: spikeAmp.value,
+        spike_width: 3.0,
+        generations: 12,
+        pop_size: 14,
+      };
+
+      const opt = await postJson(`${API_BASE}/optimize`, optBody);
+      rmnsWeights = opt.rmns_weights;
+
+      metrics.value +=
+        `GA enabled ✅\n` +
+        `GA weights [wR,wM,wN,wS]: ${rmnsWeights.map(v => Number(v).toFixed(3)).join(", ")}\n` +
+        `GA best spread (post-spike): ${Number(opt.best_spread).toFixed(3)}\n\n`;
+    } else {
+      metrics.value += `GA disabled ❌ (using predefined RMNS)\n\n`;
+    }
+
+    // 2) Run /simulate using either predefined RMNS (no weights) or GA weights
+    const simBody = {
       scenario: scenario.value,
       t_max: tMax.value,
       dt: dt.value,
@@ -105,26 +153,10 @@ async function run() {
       spike_amp: spikeAmp.value,
       spike_width: 3.0,
       max_points: 4000,
-      use_ga: useGA.value,
-      ga_generations: 12,
-      ga_pop_size: 12,
+      rmns_weights: rmnsWeights, // null or [wR,wM,wN,wS]
     };
 
-    const res = await fetch(`${API_BASE}/simulate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-  if (data.rmns_weights) {
-      metrics.value += `GA weights [wR,wM,wN,wS]: ${data.rmns_weights.map(v=>v.toFixed(3)).join(", ")}\n`;
-      metrics.value += `GA best spread (post-spike): ${Number(data.best_spread).toFixed(3)}\n`;
-    }
-    if (!res.ok) {
-      const txt = await res.text();
-      throw new Error(`API error ${res.status}: ${txt}`);
-    }
-
-    const data = await res.json();
+    const data = await postJson(`${API_BASE}/simulate`, simBody);
 
     const x = data.x || [];
     const y = data.y || [];
@@ -136,65 +168,39 @@ async function run() {
       throw new Error(`Too few points returned (${x.length}). Check backend.`);
     }
 
-    // Split into phases: before spike and after spike
-    const x1 = x.slice(0, idx),
-      y1 = y.slice(0, idx),
-      z1 = z.slice(0, idx);
-    const x2 = x.slice(idx),
-      y2 = y.slice(idx),
-      z2 = z.slice(idx);
+    const x1 = x.slice(0, idx), y1 = y.slice(0, idx), z1 = z.slice(0, idx);
+    const x2 = x.slice(idx), y2 = y.slice(idx), z2 = z.slice(idx);
 
-    // Basic metrics (spread proxy)
-    const meanX = x.reduce((a, b) => a + b, 0) / x.length;
-    const meanY = y.reduce((a, b) => a + b, 0) / y.length;
-    const meanZ = z.reduce((a, b) => a + b, 0) / z.length;
-
-    let spread = 0;
-    for (let i = 0; i < x.length; i++) {
-      const dx = x[i] - meanX,
-        dy = y[i] - meanY,
-        dz = z[i] - meanZ;
-      spread += Math.sqrt(dx * dx + dy * dy + dz * dz);
-    }
-    spread /= x.length;
-
+    const spread = spreadProxy(x, y, z);
     const zPeak = Math.max(...z);
 
-    metrics.value =
-      `API_BASE: ${API_BASE}\n` +
-      `Mode sent: ${scenario.value}\n` +
+    metrics.value +=
+      `Mode: ${scenario.value}\n` +
       `Points: ${x.length}\n` +
       `Spike index: ${idx}\n` +
       `Spread proxy: ${spread.toFixed(3)}\n` +
       `Peak z: ${zPeak.toFixed(3)}\n`;
 
-    // MAIN CHANGE: markers cloud (shows thickness/spread clearly)
     const traces = [
       {
         type: "scatter3d",
         mode: "markers",
         name: "Before spike",
-        x: x1,
-        y: y1,
-        z: z1,
+        x: x1, y: y1, z: z1,
         marker: { size: 2, opacity: 0.25 },
       },
       {
         type: "scatter3d",
         mode: "markers",
         name: "After spike",
-        x: x2,
-        y: y2,
-        z: z2,
+        x: x2, y: y2, z: z2,
         marker: { size: 2, opacity: 0.35 },
       },
       {
         type: "scatter3d",
         mode: "markers+text",
         name: "Spike",
-        x: [x[idx]],
-        y: [y[idx]],
-        z: [z[idx]],
+        x: [x[idx]], y: [y[idx]], z: [z[idx]],
         text: ["Spike"],
         textposition: "top center",
         marker: { size: 5, opacity: 1.0 },
@@ -222,9 +228,7 @@ async function run() {
   }
 }
 
-onMounted(() => {
-  run(); // initial render
-});
+onMounted(() => run());
 </script>
 
 <style scoped>
