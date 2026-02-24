@@ -62,6 +62,7 @@ import Plotly from "plotly.js-dist-min";
 const plotEl = ref(null);
 
 const scenario = ref("stress");
+const useGA = ref(false);
 const tMax = ref(80);
 const dt = ref(0.02);
 const spikeTime = ref(35);
@@ -104,10 +105,9 @@ async function run() {
       spike_amp: spikeAmp.value,
       spike_width: 3.0,
       max_points: 4000,
-
-      // OPTIONAL: force visible difference even if backend defaults change later
-      // stress_noise_std: 2.0,
-      // nostress_noise_std: 0.02,
+      use_ga: useGA.value,
+      ga_generations: 12,
+      ga_pop_size: 12,
     };
 
     const res = await fetch(`${API_BASE}/simulate`, {
@@ -115,7 +115,10 @@ async function run() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-
+  if (data.rmns_weights) {
+      metrics.value += `GA weights [wR,wM,wN,wS]: ${data.rmns_weights.map(v=>v.toFixed(3)).join(", ")}\n`;
+      metrics.value += `GA best spread (post-spike): ${Number(data.best_spread).toFixed(3)}\n`;
+    }
     if (!res.ok) {
       const txt = await res.text();
       throw new Error(`API error ${res.status}: ${txt}`);
