@@ -128,8 +128,8 @@ async function run() {
         spike_time: spikeTime.value,
         spike_amp: spikeAmp.value,
         spike_width: 3.0,
-        generations: 12,
-        pop_size: 14,
+        generations: 6,
+        pop_size: 8,
       };
 
       const opt = await postJson(`${API_BASE}/optimize`, optBody);
