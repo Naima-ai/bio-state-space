@@ -5,13 +5,13 @@ from typing import List, Literal, Optional
 import numpy as np
 
 from engine import Params, simulate
-from ga_optimize import run_evolution
+from ga import optimize_rmns
 
 app = FastAPI(title="Bio State Space API", version="1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # tighten later in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -19,6 +19,10 @@ app.add_middleware(
 
 Scenario = Literal["stress", "no-stress"]
 
+
+# -------------------------
+# SIMULATE
+# -------------------------
 class SimRequest(BaseModel):
     scenario: Scenario = "stress"
     t_max: float = Field(80.0, ge=5.0, le=300.0)
@@ -29,6 +33,7 @@ class SimRequest(BaseModel):
     spike_amp: float = 8.0
     spike_width: float = 3.0
 
+    # model params
     sigma: float = 10.0
     rho: float = 28.0
     beta: float = 8.0 / 3.0
@@ -40,10 +45,8 @@ class SimRequest(BaseModel):
 
     max_points: int = 4000
 
-    # NEW: GA mode
-    use_ga: bool = False
-    ga_generations: int = 12
-    ga_pop_size: int = 12
+    # OPTIONAL: GA-optimized weights (if provided)
+    rmns_weights: Optional[List[float]] = None  # [wR,wM,wN,wS]
 
 
 class SimResponse(BaseModel):
@@ -52,10 +55,7 @@ class SimResponse(BaseModel):
     y: List[float]
     z: List[float]
     spike_index: int
-
-    # NEW: show what weights were used
     rmns_weights: Optional[List[float]] = None
-    best_spread: Optional[float] = None
 
 
 @app.post("/simulate", response_model=SimResponse)
@@ -70,26 +70,11 @@ def simulate_endpoint(req: SimRequest):
         nostress_noise_std=req.nostress_noise_std,
     )
 
-    rmns_weights = None
-    best_spread = None
-
-    if req.use_ga:
-        sim_kwargs = dict(
-            params=params,
-            scenario=req.scenario,   # GA optimizes inside chosen mode
-            t_max=req.t_max,
-            dt=req.dt,
-            seed=req.seed,
-            spike_time=req.spike_time,
-            spike_amp=req.spike_amp,
-            spike_width=req.spike_width,
-        )
-        best_weights, best_spread = run_evolution(
-            sim_kwargs,
-            generations=req.ga_generations,
-            pop_size=req.ga_pop_size,
-        )
-        rmns_weights = np.array(best_weights, dtype=float)
+    rmns_w = None
+    if req.rmns_weights is not None:
+        if len(req.rmns_weights) != 4:
+            raise ValueError("rmns_weights must be length 4: [wR,wM,wN,wS]")
+        rmns_w = np.array(req.rmns_weights, dtype=float)
 
     t, traj = simulate(
         params=params,
@@ -100,18 +85,20 @@ def simulate_endpoint(req: SimRequest):
         spike_time=req.spike_time,
         spike_amp=req.spike_amp,
         spike_width=req.spike_width,
-        rmns_weights=rmns_weights,   # <-- optimized weights if GA used
+        rmns_weights=rmns_w,
     )
 
-    if len(t) > req.max_points:
-        step = int(np.ceil(len(t) / req.max_points))
+    # Downsample for browser
+    n = len(t)
+    if n > req.max_points:
+        step = int(np.ceil(n / req.max_points))
         t = t[::step]
         traj = traj[::step]
 
     spike_index = int(np.searchsorted(t, req.spike_time))
     spike_index = max(0, min(spike_index, len(t) - 1))
 
-    print("SCENARIO RECEIVED:", req.scenario, "| use_ga:", req.use_ga, "| weights:", rmns_weights)
+    print("SIMULATE scenario:", req.scenario, "| weights:", req.rmns_weights)
 
     return SimResponse(
         t=t.tolist(),
@@ -119,6 +106,67 @@ def simulate_endpoint(req: SimRequest):
         y=traj[:, 1].tolist(),
         z=traj[:, 2].tolist(),
         spike_index=spike_index,
-        rmns_weights=rmns_weights.tolist() if rmns_weights is not None else None,
-        best_spread=best_spread,
+        rmns_weights=req.rmns_weights,
     )
+
+
+# -------------------------
+# OPTIMIZE
+# -------------------------
+class OptimizeRequest(BaseModel):
+    scenario: Scenario = "no-stress"
+    t_max: float = Field(70.0, ge=5.0, le=300.0)
+    dt: float = Field(0.01, ge=0.001, le=0.1)
+    seed: int = 7
+
+    spike_time: float = 30.0
+    spike_amp: float = 12.0
+    spike_width: float = 3.0
+
+    # model params
+    sigma: float = 10.0
+    rho: float = 28.0
+    beta: float = 8.0 / 3.0
+    alpha_u: float = 3.0
+    gamma_b: float = 2.0
+
+    stress_noise_std: float = 2.0
+    nostress_noise_std: float = 0.02
+
+    generations: int = Field(12, ge=2, le=60)
+    pop_size: int = Field(14, ge=4, le=60)
+
+
+class OptimizeResponse(BaseModel):
+    rmns_weights: List[float]
+    best_spread: float
+
+
+@app.post("/optimize", response_model=OptimizeResponse)
+def optimize_endpoint(req: OptimizeRequest):
+    params = Params(
+        sigma=req.sigma,
+        rho=req.rho,
+        beta=req.beta,
+        alpha_u=req.alpha_u,
+        gamma_b=req.gamma_b,
+        stress_noise_std=req.stress_noise_std,
+        nostress_noise_std=req.nostress_noise_std,
+    )
+
+    best_w, best_spread = optimize_rmns(
+        params=params,
+        scenario=req.scenario,
+        t_max=req.t_max,
+        dt=req.dt,
+        seed=req.seed,
+        spike_time=req.spike_time,
+        spike_amp=req.spike_amp,
+        spike_width=req.spike_width,
+        generations=req.generations,
+        pop_size=req.pop_size,
+    )
+
+    print("OPTIMIZE scenario:", req.scenario, "| best_w:", best_w, "| best_spread:", best_spread)
+
+    return OptimizeResponse(rmns_weights=best_w, best_spread=best_spread)
